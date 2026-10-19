@@ -767,9 +767,12 @@ func (h *HTTP) serveVariablesBy(hit *varHit, consume func(*models.Mock) bool) (s
 	if _, _, _, ok := hit.table.BindAll(hit.gen, hit.binds); !ok {
 		return nil, nil, true, nil
 	}
+	// Checked first: it runs for every variable a replayed call binds.
 	for _, b := range hit.binds {
-		h.Logger.Debug("variable bound", zap.String("variable", b.Name), logcontent.String("value", b.Value),
-			logcontent.String("recorded", b.Recorded), zap.String("mock", b.Mock), zap.String("place", b.Place))
+		if ce := h.Logger.Check(zap.DebugLevel, "variable bound"); ce != nil {
+			ce.Write(zap.String("variable", b.Name), logcontent.String("value", b.Value),
+				logcontent.String("recorded", b.Recorded), zap.String("mock", b.Mock), zap.String("place", b.Place))
+		}
 	}
 	if !consume(hit.mock) {
 		return nil, nil, true, nil
