@@ -185,3 +185,44 @@ func TestTheDockerRunStopSaysWhenItKilled(t *testing.T) {
 		t.Fatalf("a docker client that had exited: killed %v after %d kills", killed, kills)
 	}
 }
+
+// Under the switch an app's steps on its way out at a set's end move the
+// teardown scope of the run that ran it (Run's context), which that run's
+// drains wait on.
+func TestAnAppsStepsOutMoveTheTeardownOfTheRunThatRanIt(t *testing.T) {
+	t.Setenv(provenswitch.Env, "1")
+	budget := utils.StopStallBudget
+	utils.StopStallBudget = time.Minute
+	t.Cleanup(func() { utils.StopStallBudget = budget })
+	dir := t.TempDir()
+	script := `exec 3</dev/null 4</dev/null 5</dev/null 6</dev/null
+trap 'for fd in 3 4 5 6; do eval "exec $fd<&-"; sleep 0.3; done; exit 0' INT; touch started; while :; do sleep 0.1; done`
+	a := NewApp(zap.NewNop(), "cd "+dir+" && "+script, nil, models.SetupOptions{CommandType: string(utils.Native)})
+	runCtx, scope := utils.NewTeardownScope(context.Background())
+	ctx, cancel := context.WithCancelCause(runCtx)
+	defer cancel(nil)
+	done := make(chan models.AppError, 1)
+	go func() { done <- a.Run(ctx) }()
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "started")); err == nil {
+			break
+		}
+		select {
+		case appErr := <-done:
+			t.Fatalf("the app ended before it started: %+v", appErr)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	cancel(models.ErrAppStoppedForSetEnd)
+	select {
+	case appErr := <-done:
+		if appErr.StopKilled != "" {
+			t.Fatalf("an app that made progress on its way out was killed: %q", appErr.StopKilled)
+		}
+	case <-time.After(2 * time.Minute):
+		t.Fatal("the stop did not end")
+	}
+	if scope.Moves() == 0 {
+		t.Fatal("the app's steps out moved the teardown of the run that ran it not once")
+	}
+}

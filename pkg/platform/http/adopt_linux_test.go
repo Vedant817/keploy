@@ -266,7 +266,10 @@ trap 'for fd in 3 4 5 6 7 8 9; do eval "exec $fd<&-"; sleep 0.3; done; echo done
 	}
 
 	core, logs := observer.New(zapcore.DebugLevel)
-	why := stopAdopted(zap.New(core), nil)
+	// The run's teardown scope: the slow daemon's steps on its way out move
+	// it, which the run's drains wait on.
+	scope := &utils.TeardownScope{}
+	why := stopAdopted(zap.New(core), nil, scope)
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("polite %d, deaf %d, busy %d, churn %d, slow %d", polite, deaf, busy, churn, slow)
@@ -286,6 +289,9 @@ trap 'for fd in 3 4 5 6 7 8 9; do eval "exec $fd<&-"; sleep 0.3; done; echo done
 	}
 	if _, err := os.Stat(done); err != nil {
 		t.Fatalf("the daemon whose way out made progress was killed before it was done: %v", err)
+	}
+	if scope.Moves() == 0 {
+		t.Fatal("the daemons' way out made progress, and moved the run's teardown not once")
 	}
 	killed := logs.FilterMessageSnippet("killing it").All()
 	if len(killed) != 1 {
@@ -335,7 +341,7 @@ func TestAPressKillsTheDaemonsAStopWaitsFor(t *testing.T) {
 		late, lateErr = startDaemon("exec sleep 120")
 		utils.MarkInterruptedAgain()
 	}()
-	why := stopAdopted(zap.New(core), nil)
+	why := stopAdopted(zap.New(core), nil, nil)
 	if lateErr != nil {
 		t.Fatal(lateErr)
 	}

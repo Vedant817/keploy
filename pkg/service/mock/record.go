@@ -81,6 +81,9 @@ func JudgeReplays() { replaysJudged.Store(true) }
 // diff, correlates any per-test scopes the runner reported into mappings.yaml,
 // pushes the set to the store, and propagates the runner's exit code.
 func (m *mockService) Record(ctx context.Context) error {
+	// The recording's own teardown scope: what keploy sees its stops do
+	// moves it, and the drain below waits while it moves (teardownDrain).
+	ctx, teardown := utils.NewTeardownScope(ctx)
 	name := m.setName()
 	requests := m.requests()
 	started := time.Now()
@@ -127,7 +130,7 @@ func (m *mockService) Record(ctx context.Context) error {
 		// the agent's lifetime, now that the drain is done.
 		cancel()
 		setupCancel()
-		if err := utils.DrainErrGroup(m.logger, "mock-record", errGrp, 30*time.Second); err != nil {
+		if err := m.teardownDrain("mock-record", errGrp, teardown); err != nil {
 			utils.LogError(m.logger, err, "failed to drain mock-record goroutines")
 		}
 	}()

@@ -109,6 +109,12 @@ type App struct {
 	// made once those containers are gone (the stale-agent probe before the
 	// next up).
 	composeProjectSeen atomic.Pointer[string]
+	// teardown is the teardown scope of the run that set the app up or ran
+	// it last (utils.TeardownScopeOf of Setup's or Run's context): each step
+	// keploy sees its stop take -- the app's processes or container on
+	// their way out, the compose project's down -- is a movement of it,
+	// which that run's drains wait on (utils.DrainErrGroupProgress).
+	teardown atomic.Pointer[utils.TeardownScope]
 	// composeAPI is the Engine API client the compose library drives the
 	// stack through (docker.NewComposeAPIClient). Built with the first runner
 	// and kept for the App's life, as the docker client is: the runner is
@@ -142,6 +148,7 @@ type App struct {
 }
 
 func (a *App) Setup(ctx context.Context) error {
+	a.noteTeardownScope(ctx)
 
 	// isDetachMode scans the command for -d/--detach; --from-container has no
 	// command, so there is nothing to scan and nothing to refuse.
@@ -492,7 +499,16 @@ func (a *App) Kind(_ context.Context) utils.CmdType {
 }
 
 func (a *App) Run(ctx context.Context) models.AppError {
+	a.noteTeardownScope(ctx)
 	return a.run(ctx)
+}
+
+// noteTeardownScope keeps the teardown scope ctx carries, if any, as the
+// app's (App.teardown).
+func (a *App) noteTeardownScope(ctx context.Context) {
+	if s := utils.TeardownScopeOf(ctx); s != nil {
+		a.teardown.Store(s)
+	}
 }
 
 func (a *App) RecentLogs(ctx context.Context) string {
@@ -1068,6 +1084,7 @@ func (a *App) composeDownContext(project string) (context.Context, context.Cance
 			if n := moved.Load(); n != last {
 				last = n
 				meter.Reset()
+				a.teardown.Load().Note()
 				continue
 			}
 			if meter.Expired() {
@@ -2270,7 +2287,7 @@ func (a *App) run(ctx context.Context) models.AppError {
 					// (setend_stop.go); the drains wait for it.
 					killed, reached, err = func() (string, []utils.Reached, error) {
 						defer utils.BeginAppStop()()
-						return utils.InterruptProcessTreeStop(a.logger, cmd.Process.Pid, syscall.SIGINT)
+						return utils.InterruptProcessTreeStop(a.logger, cmd.Process.Pid, syscall.SIGINT, a.teardown.Load())
 					}()
 				} else {
 					killed, reached, err = utils.InterruptProcessTreeReached(a.logger, cmd.Process.Pid, syscall.SIGINT)
